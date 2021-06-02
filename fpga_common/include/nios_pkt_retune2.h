@@ -91,6 +91,9 @@
 
 #define NIOS_PKT_RETUNE2_MAGIC            'U'
 
+/* Any retune scheduled with this mask will be scheduled relative to a trigger instead of overall timestamps */
+#define NIOS_PKT_RETUNE2_TRIGGER_MASK     ((uint64_t) - (2<<15))
+
 /* Specify this value instead of a timestamp to clear the retune2 queue */
 #define NIOS_PKT_RETUNE2_CLEAR_QUEUE      ((uint64_t) -1)
 

@@ -105,7 +105,7 @@ begin
             if( meta_en = '1' ) then
                 timestamp_reset <= '0';
             else
-                timestamp_reset <= '1';
+                timestamp_reset <= '0';
             end if;
         end if;
     end process;

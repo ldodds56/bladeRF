@@ -45,6 +45,11 @@ void rfic_invalidate_frequency(bladerf_module module);
 #define QUEUE_FULL          0xff
 #define QUEUE_EMPTY         0xfe
 
+#define BLADERF_TRIGGER_REG_ARM ((uint8_t)(1 << 0))
+#define BLADERF_TRIGGER_REG_MASTER ((uint8_t)(1 << 2))
+#define BLADERF_TRIGGER_REG_LINE ((uint8_t)(1 << 3))
+
+
 /* State of items in the retune queue */
 enum entry_state {
     ENTRY_STATE_INVALID = 0,  /* Marks entry invalid and not in use */
@@ -55,6 +60,24 @@ enum entry_state {
                                * handle this retune */
     ENTRY_STATE_DONE,         /* Retune is complete */
 };
+
+/* State of trigger vs scheduling */
+enum trigger_state {
+    TRIGGER_IDLE = 0,       
+    TRIGGER_INIT,       
+    TRIGGER_RUN,
+    TRIGGER_DONE,
+};
+
+/* Struct holding all necessary info regarding trigger */
+struct trigger_state_info {
+    enum trigger_state state;       /* Holds state of trigger event */
+    uint64_t timestamp;             /* Timestamp of start of trigger */
+    uint8_t idx;                    /* Current offset in trigger queue */
+};
+
+struct trigger_state_info rx_trigger_info = {.state = TRIGGER_IDLE, .timestamp = 0, .idx = 0};
+struct trigger_state_info tx_trigger_info = {.state = TRIGGER_IDLE, .timestamp = 0, .idx = 0};
 
 struct queue_entry {
     volatile enum entry_state state;
@@ -68,7 +91,7 @@ static struct queue {
     uint8_t rem_idx;    /* Removal index */
 
     struct queue_entry entries[RETUNE2_QUEUE_MAX];
-} rx_queue, tx_queue;
+} rx_queue, tx_queue, rx_trigger_queue, tx_trigger_queue;
 
 /* Returns queue size after enqueue operation, or QUEUE_FULL if we could
  * not enqueue the requested item */
@@ -219,9 +242,9 @@ static inline void profile_activate(bladerf_module module, fastlock_profile *p)
     adi_rfspdt_select(module, p);
 }
 
-static inline void retune_isr(struct queue *q)
+static inline void retune_isr(struct queue *q, uint8_t offset)
 {
-    struct queue_entry *e = peek_next_retune(q);
+    struct queue_entry *e = peek_next_retune_offset(q, offset);
     if (e != NULL) {
         if (e->state == ENTRY_STATE_SCHEDULED) {
             e->state = ENTRY_STATE_READY;
@@ -236,7 +259,11 @@ static inline void retune_isr(struct queue *q)
 static void retune_rx(void *context)
 {
     /* Handle the ISR */
-    retune_isr(&rx_queue);
+    if (rx_trigger_info.state == TRIGGER_IDLE || rx_trigger_info.state == TRIGGER_DONE) {
+        retune_isr(&rx_queue, 0); // Use schedule queue
+    } else {
+        retune_isr(&rx_trigger_queue, rx_trigger_info.idx); // Use trigger queue
+    }
 
     /* Clear the interrupt */
     timer_tamer_clear_interrupt(BLADERF_MODULE_RX);
@@ -245,8 +272,11 @@ static void retune_rx(void *context)
 static void retune_tx(void *context)
 {
     /* Handle the ISR */
-    retune_isr(&tx_queue);
-
+    if (tx_trigger_info.state == TRIGGER_IDLE || rx_trigger_info.state == TRIGGER_DONE) { 
+        retune_isr(&tx_queue, 0); // Use schedule queue
+    } else {
+        retune_isr(&tx_trigger_queue, tx_trigger_info.idx); // Use trigger queue
+    }
     /* Clear the interrupt */
     timer_tamer_clear_interrupt(BLADERF_MODULE_TX);
 }
@@ -280,9 +310,56 @@ void pkt_retune2_init()
 #endif
 }
 
-static inline void perform_work(struct queue *q, bladerf_module module)
-{
-    struct queue_entry *e = peek_next_retune(q);
+static inline void perform_work(struct queue *schedule_queue, struct queue *trigger_queue, struct trigger_state_info *trigger_info, bladerf_module module)
+{    
+    uint8_t trigger_ctl;
+    switch (module) {
+        case BLADERF_MODULE_TX:
+            trigger_ctl = tx_trigger_ctl_read();
+            break;
+        case BLADERF_MODULE_RX:
+            trigger_ctl = rx_trigger_ctl_read();
+            break;
+        default:
+            return;
+    } 
+
+    struct queue_entry *e = NULL;  
+    switch(trigger_info->state) {
+        // On start of trigger, clear scheduled queue and 
+        case TRIGGER_INIT:
+            // Reset schedule queue to prevent overlapping retunes
+            // TODO: Revisit this behavior
+            //reset_queue(schedule_queue);
+
+            trigger_info->idx = 0;
+            e = peek_next_retune(trigger_queue);  //TODO: Assumes at least 1
+            trigger_info->state = TRIGGER_RUN;
+            break;
+        case TRIGGER_RUN:
+            if (trigger_queue->count == trigger_info->idx) {
+                trigger_info->state = TRIGGER_DONE;
+            } else {
+                e = peek_next_retune_offset(trigger_queue, trigger_info->idx);
+            }
+            break;
+        
+        case TRIGGER_IDLE:
+            if (trigger_queue->count != 0 && (trigger_ctl & BLADERF_TRIGGER_REG_LINE) == 0) { // count != 0 wont work b/c queue stays
+                trigger_info->state = TRIGGER_INIT;
+                // trigger_info->timestamp = timestamp; 
+                trigger_info->timestamp = time_tamer_read(module); // Shouldn't leave this here but for testing
+            } else {
+                e = peek_next_retune(schedule_queue);
+            }
+            break;
+        case TRIGGER_DONE:
+            e = peek_next_retune(schedule_queue);
+            if ((trigger_ctl & BLADERF_TRIGGER_REG_LINE) == BLADERF_TRIGGER_REG_LINE) { // count != 0 wont work b/c queue stays
+                trigger_info->state = TRIGGER_IDLE;
+            }
+            break;
+    }
 
     if (e == NULL) {
         return;
@@ -296,7 +373,11 @@ static inline void perform_work(struct queue *q, bladerf_module module)
 
             /* Schedule the retune */
             e->state = ENTRY_STATE_SCHEDULED;
-            tamer_schedule(module, e->timestamp);
+            if (trigger_info->state == TRIGGER_IDLE || trigger_info->state == TRIGGER_DONE) {
+                tamer_schedule(module, e->timestamp);
+            } else {
+                tamer_schedule(module, e->timestamp + trigger_info->timestamp);
+            }
 
             break;
 
@@ -311,8 +392,14 @@ static inline void perform_work(struct queue *q, bladerf_module module)
             /* Activate the fast lock profile for this retune */
             profile_activate(module, e->profile);
 
-            /* Drop the item from the queue */
-            dequeue_retune(q, NULL);
+            // TODO: Set up states so this is masK?
+            if (trigger_info->state == TRIGGER_IDLE || trigger_info->state == TRIGGER_DONE) {
+                /* Drop the item from the queue */
+                dequeue_retune(schedule_queue, NULL);
+            } else {
+                trigger_info->idx += 1;
+                e->state = ENTRY_STATE_NEW;
+            }
 
             break;
 
@@ -324,8 +411,8 @@ static inline void perform_work(struct queue *q, bladerf_module module)
 
 void pkt_retune2_work(void)
 {
-    perform_work(&rx_queue, BLADERF_MODULE_RX);
-    perform_work(&tx_queue, BLADERF_MODULE_TX);
+    perform_work(&rx_queue, &rx_trigger_queue, &rx_trigger_info, BLADERF_MODULE_RX);
+    perform_work(&tx_queue, &tx_trigger_queue, &tx_trigger_info, BLADERF_MODULE_TX);
 }
 
 void pkt_retune2(struct pkt_buf *b)
@@ -397,11 +484,13 @@ void pkt_retune2(struct pkt_buf *b)
         switch (module) {
             case BLADERF_MODULE_RX:
                 reset_queue(&rx_queue);
+                reset_queue(&rx_trigger_queue);
                 status = 0;
                 break;
 
             case BLADERF_MODULE_TX:
                 reset_queue(&tx_queue);
+                reset_queue(&tx_trigger_queue);
                 status = 0;
                 break;
 
@@ -409,6 +498,38 @@ void pkt_retune2(struct pkt_buf *b)
                 INCREMENT_ERROR_COUNT();
                 status = -1;
         }
+    } else if ((timestamp & NIOS_PKT_RETUNE2_TRIGGER_MASK) == NIOS_PKT_RETUNE2_TRIGGER_MASK) {
+        // uint8_t queue_size;
+        uint64_t relative_timestamp = timestamp ^ NIOS_PKT_RETUNE2_TRIGGER_MASK;
+        switch (module) {
+            case BLADERF_MODULE_RX:
+                // queue_size = enqueue_retune(&rx_trigger_queue, profile, relative_timestamp);
+                enqueue_retune(&rx_trigger_queue, profile, relative_timestamp);
+                profile_load_scheduled(&rx_trigger_queue, module);
+                status = 0;
+                break;
+
+            case BLADERF_MODULE_TX:
+                // queue_size = enqueue_retune(&tx_trigger_queue, profile, relative_timestamp);
+                enqueue_retune(&tx_trigger_queue, profile, relative_timestamp);
+                profile_load_scheduled(&tx_trigger_queue, module);
+                status = 0;
+                break;
+
+            default:
+                INCREMENT_ERROR_COUNT();
+                status = -1;
+        }
+
+        // if (queue_size == QUEUE_FULL) {
+        //     status = -1;
+        // } else {
+            if (module == BLADERF_MODULE_RX) {
+                status = rx_trigger_info.state;
+            } else if (module == BLADERF_MODULE_TX) {
+                status = tx_trigger_info.state;
+            }
+        // }
     } else {
         uint8_t queue_size;
 
