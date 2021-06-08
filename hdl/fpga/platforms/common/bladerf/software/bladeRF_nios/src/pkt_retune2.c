@@ -325,6 +325,8 @@ static inline void perform_work(struct queue *schedule_queue, struct queue *trig
     } 
 
     struct queue_entry *e = NULL;  
+    bool trigger_armed = (trigger_ctl & BLADERF_TRIGGER_REG_LINE) == BLADERF_TRIGGER_REG_LINE;
+    bool trigger_fired = (trigger_ctl & BLADERF_TRIGGER_REG_LINE) == 0;
     switch(trigger_info->state) {
         // On start of trigger, clear scheduled queue and 
         case TRIGGER_INIT:
@@ -332,12 +334,22 @@ static inline void perform_work(struct queue *schedule_queue, struct queue *trig
             // TODO: Revisit this behavior
             //reset_queue(schedule_queue);
 
-            trigger_info->idx = 0;
-            e = peek_next_retune(trigger_queue);  //TODO: Assumes at least 1
-            trigger_info->state = TRIGGER_RUN;
+            if (trigger_armed) {
+                trigger_info->state = TRIGGER_IDLE;
+            } else {
+                trigger_info->idx = 0;
+                e = peek_next_retune(trigger_queue);  //TODO: Assumes at least 1
+                trigger_info->state = TRIGGER_RUN;
+            }
             break;
         case TRIGGER_RUN:
-            if (trigger_queue->count == trigger_info->idx) {
+            if (trigger_armed) {
+                trigger_info->state = TRIGGER_IDLE;  
+                struct queue_entry *current_entry = peek_next_retune_offset(trigger_queue, trigger_info->idx);
+                if (current_entry != NULL) {
+                    current_entry->state = ENTRY_STATE_NEW;
+                }
+            } else if (trigger_queue->count == trigger_info->idx) {
                 trigger_info->state = TRIGGER_DONE;
             } else {
                 e = peek_next_retune_offset(trigger_queue, trigger_info->idx);
@@ -345,7 +357,7 @@ static inline void perform_work(struct queue *schedule_queue, struct queue *trig
             break;
         
         case TRIGGER_IDLE:
-            if (trigger_queue->count != 0 && (trigger_ctl & BLADERF_TRIGGER_REG_LINE) == 0) { // count != 0 wont work b/c queue stays
+            if (trigger_queue->count != 0 && trigger_fired) { // count != 0 wont work b/c queue stays
                 trigger_info->state = TRIGGER_INIT;
                 // trigger_info->timestamp = timestamp; 
                 trigger_info->timestamp = time_tamer_read(module); // Shouldn't leave this here but for testing
@@ -355,7 +367,7 @@ static inline void perform_work(struct queue *schedule_queue, struct queue *trig
             break;
         case TRIGGER_DONE:
             e = peek_next_retune(schedule_queue);
-            if ((trigger_ctl & BLADERF_TRIGGER_REG_LINE) == BLADERF_TRIGGER_REG_LINE) { // count != 0 wont work b/c queue stays
+            if (trigger_armed) { // count != 0 wont work b/c queue stays
                 trigger_info->state = TRIGGER_IDLE;
             }
             break;
