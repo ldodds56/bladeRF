@@ -74,6 +74,8 @@ struct trigger_state_info {
     enum trigger_state state;       /* Holds state of trigger event */
     uint64_t timestamp;             /* Timestamp of start of trigger */
     uint8_t idx;                    /* Current offset in trigger queue */
+    uint64_t period;                /* Period of retunes */
+    uint64_t iter;
 };
 
 struct trigger_state_info rx_trigger_info = {.state = TRIGGER_IDLE, .timestamp = 0, .idx = 0};
@@ -272,7 +274,7 @@ static void retune_rx(void *context)
 static void retune_tx(void *context)
 {
     /* Handle the ISR */
-    if (tx_trigger_info.state == TRIGGER_IDLE || rx_trigger_info.state == TRIGGER_DONE) { 
+    if (tx_trigger_info.state == TRIGGER_IDLE || tx_trigger_info.state == TRIGGER_DONE) { 
         retune_isr(&tx_queue, 0); // Use schedule queue
     } else {
         retune_isr(&tx_trigger_queue, tx_trigger_info.idx); // Use trigger queue
@@ -323,39 +325,60 @@ static inline void perform_work(struct queue *schedule_queue, struct queue *trig
         default:
             return;
     } 
+    bool trigger_rearmed = ((trigger_ctl & BLADERF_TRIGGER_REG_LINE) == BLADERF_TRIGGER_REG_LINE);
+    bool trigger_fired = ((trigger_ctl & BLADERF_TRIGGER_REG_LINE) == 0);
 
     struct queue_entry *e = NULL;  
     switch(trigger_info->state) {
-        // On start of trigger, clear scheduled queue and 
         case TRIGGER_INIT:
             // Reset schedule queue to prevent overlapping retunes
             // TODO: Revisit this behavior
             //reset_queue(schedule_queue);
 
             trigger_info->idx = 0;
-            e = peek_next_retune(trigger_queue);  //TODO: Assumes at least 1
-            trigger_info->state = TRIGGER_RUN;
+            trigger_info->iter = 0;
+            if (trigger_rearmed) {
+                trigger_info->state = TRIGGER_IDLE;
+            } else {
+                e = peek_next_retune(trigger_queue);  //TODO: Assumes at least 1
+                trigger_info->state = TRIGGER_RUN;
+            }
             break;
         case TRIGGER_RUN:
-            if (trigger_queue->count == trigger_info->idx) {
-                trigger_info->state = TRIGGER_DONE;
+            // Stop trigger retunes if trigger was rearmed
+            if (trigger_rearmed) {
+                // Reset trigger state
+                trigger_info->state = TRIGGER_IDLE;
+                // Reset current entry if applicable
+                if (trigger_info->idx < trigger_queue->count) {
+                    struct queue_entry* current_entry = peek_next_retune_offset(trigger_queue, trigger_info->idx);
+                    current_entry->state = ENTRY_STATE_NEW;
+                }
             } else {
+                // Check if all retunes are finished
+                if (trigger_queue->count == trigger_info->idx) {
+                    if (trigger_info->period == 0) {
+                        trigger_info->state = TRIGGER_DONE;
+                    }
+                    trigger_info->idx = 0;
+                    trigger_info->iter = trigger_info->iter + 1;
+                }
                 e = peek_next_retune_offset(trigger_queue, trigger_info->idx);
             }
             break;
         
         case TRIGGER_IDLE:
-            if (trigger_queue->count != 0 && (trigger_ctl & BLADERF_TRIGGER_REG_LINE) == 0) { // count != 0 wont work b/c queue stays
+            if (trigger_queue->count != 0 && trigger_fired) { 
                 trigger_info->state = TRIGGER_INIT;
-                // trigger_info->timestamp = timestamp; 
                 trigger_info->timestamp = time_tamer_read(module); // Shouldn't leave this here but for testing
             } else {
                 e = peek_next_retune(schedule_queue);
             }
             break;
+        
         case TRIGGER_DONE:
             e = peek_next_retune(schedule_queue);
-            if ((trigger_ctl & BLADERF_TRIGGER_REG_LINE) == BLADERF_TRIGGER_REG_LINE) { // count != 0 wont work b/c queue stays
+            if (trigger_rearmed) {
                 trigger_info->state = TRIGGER_IDLE;
             }
             break;
@@ -376,7 +399,7 @@ static inline void perform_work(struct queue *schedule_queue, struct queue *trig
             if (trigger_info->state == TRIGGER_IDLE || trigger_info->state == TRIGGER_DONE) {
                 tamer_schedule(module, e->timestamp);
             } else {
-                tamer_schedule(module, e->timestamp + trigger_info->timestamp);
+                tamer_schedule(module, e->timestamp + trigger_info->timestamp + trigger_info->iter * trigger_info->period);
             }
 
             break;
@@ -500,13 +523,15 @@ void pkt_retune2(struct pkt_buf *b)
         }
     } else if ((timestamp & NIOS_PKT_RETUNE2_TRIGGER_MASK) == NIOS_PKT_RETUNE2_TRIGGER_MASK) {
         // uint8_t queue_size;
-        uint64_t relative_timestamp = timestamp ^ NIOS_PKT_RETUNE2_TRIGGER_MASK;
+        uint64_t relative_timestamp = timestamp & NIOS_PKT_RETUNE2_TRIGGER_TIMESTAMP_MASK;
+        uint64_t period = (timestamp & NIOS_PKT_RETUNE2_TRIGGER_PERIOD_MASK) >> 16;
         switch (module) {
             case BLADERF_MODULE_RX:
                 // queue_size = enqueue_retune(&rx_trigger_queue, profile, relative_timestamp);
                 enqueue_retune(&rx_trigger_queue, profile, relative_timestamp);
                 profile_load_scheduled(&rx_trigger_queue, module);
                 status = 0;
+                if (period != ((2<<15)-1)) rx_trigger_info.period = period;
                 break;
 
             case BLADERF_MODULE_TX:
@@ -514,6 +539,7 @@ void pkt_retune2(struct pkt_buf *b)
                 enqueue_retune(&tx_trigger_queue, profile, relative_timestamp);
                 profile_load_scheduled(&tx_trigger_queue, module);
                 status = 0;
+                if (period != ((2<<15)-1)) tx_trigger_info.period = period;
                 break;
 
             default:
