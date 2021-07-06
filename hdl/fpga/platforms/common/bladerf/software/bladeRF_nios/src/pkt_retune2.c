@@ -69,15 +69,26 @@ enum trigger_state {
     TRIGGER_DONE,
 };
 
+/* Used for debouncing trigger signals */
+struct debouncer {
+    uint8_t desired_count;
+    bool current_state;
+    uint8_t count;
+};
+
+struct debouncer rx_trigger_debouncer = {.desired_count=100, .current_state=1, .count=0};
+struct debouncer tx_trigger_debouncer = {.desired_count=100, .current_state=1, .count=0};
+
 /* Struct holding all necessary info regarding trigger */
 struct trigger_state_info {
     enum trigger_state state;       /* Holds state of trigger event */
     uint64_t timestamp;             /* Timestamp of start of trigger */
     uint8_t idx;                    /* Current offset in trigger queue */
+    struct debouncer *trigger_debouncer;
 };
 
-struct trigger_state_info rx_trigger_info = {.state = TRIGGER_IDLE, .timestamp = 0, .idx = 0};
-struct trigger_state_info tx_trigger_info = {.state = TRIGGER_IDLE, .timestamp = 0, .idx = 0};
+struct trigger_state_info rx_trigger_info = {.state = TRIGGER_IDLE, .timestamp = 0, .idx = 0, .trigger_debouncer=&rx_trigger_debouncer};
+struct trigger_state_info tx_trigger_info = {.state = TRIGGER_IDLE, .timestamp = 0, .idx = 0, .trigger_debouncer=&tx_trigger_debouncer};
 
 struct queue_entry {
     volatile enum entry_state state;
@@ -310,6 +321,18 @@ void pkt_retune2_init()
 #endif
 }
 
+static inline void debounce(struct debouncer *debounce_data, bool signal) {
+    if (signal != debounce_data->current_state) {
+        debounce_data->count += 1;
+        if (debounce_data->count == debounce_data->desired_count) {
+            debounce_data->count = 0;
+            debounce_data->current_state = signal;
+        }
+    } else {
+        debounce_data->count = 0;
+    }
+}
+
 static inline void perform_work(struct queue *schedule_queue, struct queue *trigger_queue, struct trigger_state_info *trigger_info, bladerf_module module)
 {    
     uint8_t trigger_ctl;
@@ -325,7 +348,8 @@ static inline void perform_work(struct queue *schedule_queue, struct queue *trig
     } 
 
     struct queue_entry *e = NULL;  
-    bool trigger_armed = (trigger_ctl & BLADERF_TRIGGER_REG_LINE) == BLADERF_TRIGGER_REG_LINE;
+    debounce(trigger_info->trigger_debouncer, (trigger_ctl & BLADERF_TRIGGER_REG_LINE) == BLADERF_TRIGGER_REG_LINE);
+    bool trigger_armed = trigger_info->trigger_debouncer->current_state; //(trigger_ctl & BLADERF_TRIGGER_REG_LINE) == BLADERF_TRIGGER_REG_LINE;
     bool trigger_fired = (trigger_ctl & BLADERF_TRIGGER_REG_LINE) == 0;
     switch(trigger_info->state) {
         // On start of trigger, clear scheduled queue and 
@@ -368,7 +392,7 @@ static inline void perform_work(struct queue *schedule_queue, struct queue *trig
         case TRIGGER_DONE:
             e = peek_next_retune(schedule_queue);
             if (trigger_armed) { // count != 0 wont work b/c queue stays
-                trigger_info->state = TRIGGER_IDLE;
+                // trigger_info->state = TRIGGER_IDLE;
             }
             break;
     }
