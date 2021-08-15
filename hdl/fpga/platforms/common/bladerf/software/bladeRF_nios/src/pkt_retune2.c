@@ -363,7 +363,7 @@ static inline void perform_work(struct queue *schedule_queue, struct queue *trig
                     trigger_info->idx = 0;
                     trigger_info->iter = trigger_info->iter + 1;
                 }
-                e = peek_next_retune_offset(trigger_queue, trigger_info->idx);
+                if (trigger_info->state != TRIGGER_DONE) {e = peek_next_retune_offset(trigger_queue, trigger_info->idx);}
             }
             break;
         
