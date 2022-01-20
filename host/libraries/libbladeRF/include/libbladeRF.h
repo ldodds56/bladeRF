@@ -51,7 +51,7 @@
  *
  *  https://github.com/Nuand/bladeRF/blob/master/doc/development/versioning.md
  */
-#define LIBBLADERF_API_VERSION (0x02040000)
+#define LIBBLADERF_API_VERSION (0x02040100)
 
 #ifdef __cplusplus
 extern "C" {
@@ -426,6 +426,7 @@ typedef enum {
     BLADERF_FPGA_40KLE   = 40,  /**< 40 kLE FPGA */
     BLADERF_FPGA_115KLE  = 115, /**< 115 kLE FPGA */
     BLADERF_FPGA_A4      = 49,  /**< 49 kLE FPGA (A4) */
+    BLADERF_FPGA_A5      = 77,  /**< 77 kLE FPGA (A5) */
     BLADERF_FPGA_A9      = 301  /**< 301 kLE FPGA (A9) */
 } bladerf_fpga_size;
 
@@ -1475,7 +1476,7 @@ int CALL_CONV bladerf_get_loopback(struct bladerf *dev, bladerf_loopback *lb);
  *
  *  - The two devices are connected such they share a common ground and their
  *      `mini_exp[1]` pins are connected. `mini_exp[1]` is J71-4 on bladeRF
- *      x40/x115, and J51-1 on bladeRF xA4/xA9.
+ *      x40/x115, and J51-1 on bladeRF xA4/xA5/xA9.
  *
  *  - Both devices are already configured to utilize a common clock signal via
  *      the external SMB connection.  Generally, this will consist of one device
@@ -1605,7 +1606,7 @@ typedef enum {
 typedef enum {
     BLADERF_TRIGGER_INVALID = -1, /**< Invalid selection */
     BLADERF_TRIGGER_J71_4,        /**< J71 pin 4, mini_exp[1] on x40/x115 */
-    BLADERF_TRIGGER_J51_1,        /**< J51 pin 1, mini_exp[1] on xA4/xA9 */
+    BLADERF_TRIGGER_J51_1,        /**< J51 pin 1, mini_exp[1] on xA4/xA5/xA9 */
     BLADERF_TRIGGER_MINI_EXP_1,   /**< mini_exp[1], hardware-independent */
 
     BLADERF_TRIGGER_USER_0 = 128, /**< Reserved for user SW/HW customizations */
@@ -3169,6 +3170,7 @@ typedef enum {
     BLADERF_IMAGE_TYPE_TX_DC_CAL,    /**< TX DC offset calibration table */
     BLADERF_IMAGE_TYPE_RX_IQ_CAL,    /**< RX IQ balance calibration table */
     BLADERF_IMAGE_TYPE_TX_IQ_CAL,    /**< TX IQ balance calibration table */
+    BLADERF_IMAGE_TYPE_FPGA_A5,      /**< FPGA bitstream for A5 device */
 } bladerf_image_type;
 
 /** Size of the magic signature at the beginning of bladeRF image files */
@@ -3633,6 +3635,45 @@ int CALL_CONV bladerf_write_trigger(struct bladerf *dev,
                                     uint8_t val);
 
 /** @} (End of FN_TRIGGER_CONTROL) */
+
+/**
+ * @defgroup FN_WISHBONE_MASTER Wishbone bus master
+ *
+ * These functions provide the ability to read and write to the wishbone peripheral bus,
+ * which is reserved for modem
+ *
+ * These functions are thread-safe.
+ *
+ * @{
+ */
+
+/**
+ * Read a specific Wishbone Master address
+ *
+ * @param       dev     Device handle
+ * @param       addr    Wishbone Master address
+ * @param[out]  data    Wishbone Master data
+ *
+ * @return 0 on success, value from \ref RETCODES list on failure
+ */
+API_EXPORT
+int CALL_CONV bladerf_wishbone_master_read(struct bladerf *dev, uint32_t addr, uint32_t *data);
+
+/**
+ * Write value to a specific Wishbone Master address
+ *
+ *
+ * @param       dev     Device handle
+ * @param       addr    Wishbone Master address
+ * @param       data    Wishbone Master data
+ *
+ * @return 0 on success, value from \ref RETCODES list on failure
+ */
+API_EXPORT
+int CALL_CONV bladerf_wishbone_master_write(struct bladerf *dev, uint32_t addr, uint32_t val);
+
+/** @} (End of FN_WISHBONE_MASTER) */
+
 
 /**
  * @defgroup FN_CONFIG_GPIO Configuration GPIO

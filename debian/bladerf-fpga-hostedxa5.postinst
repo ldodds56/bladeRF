@@ -1,10 +1,10 @@
 #!/bin/sh -e
 
-UPSTREAM='https://www.nuand.com/fpga/v0.14.0/hostedx40.rbf'
-CHECKSUM='25f402b3734c9aa0d37db9531f93335c'
-DATAFILE='/usr/share/Nuand/bladeRF/hostedx40.rbf'
+UPSTREAM='https://www.nuand.com/fpga/v0.14.0/hostedxA5.rbf'
+CHECKSUM='ae6391cc3fd467bbb07868450612ce17'
+DATAFILE='/usr/share/Nuand/bladeRF/hostedxA5.rbf'
 DESCRIPT='FPGA bitstream'
-MYNAMEIS='bladerf-fpga-hostedx40'
+MYNAMEIS='bladerf-fpga-hostedxa5'
 
 checkfile () {
 	[ -z "$1" ] && exit 3

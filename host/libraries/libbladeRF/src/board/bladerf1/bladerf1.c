@@ -995,6 +995,7 @@ static int bladerf1_open(struct bladerf *dev, struct bladerf_devinfo *devinfo)
      * the board's own knowledge. We need this to be a non-fatal condition,
      * so that the problem can be fixed easily. */
     if (board_data->fpga_size == BLADERF_FPGA_A4 ||
+        board_data->fpga_size == BLADERF_FPGA_A5 ||
         board_data->fpga_size == BLADERF_FPGA_A9) {
         uint16_t vid, pid;
 
@@ -2683,6 +2684,13 @@ static int perform_format_config(struct bladerf *dev, bladerf_direction dir,
         return status;
     }
 
+    if (format == BLADERF_FORMAT_PACKET_META) {
+       gpio_val |= BLADERF_GPIO_PACKET;
+       use_timestamps = true;
+    } else {
+       gpio_val &= ~BLADERF_GPIO_PACKET;
+    }
+
     if (use_timestamps) {
         gpio_val |= (BLADERF_GPIO_TIMESTAMP | BLADERF_GPIO_TIMESTAMP_DIV2);
     } else {
@@ -3323,6 +3331,24 @@ static int bladerf1_write_trigger(struct bladerf *dev, bladerf_channel ch,
 }
 
 /******************************************************************************/
+/* Low-level Wishbone Master access */
+/******************************************************************************/
+
+static int bladerf1_wishbone_master_read(struct bladerf *dev, uint32_t addr, uint32_t *data)
+{
+    CHECK_BOARD_STATE(STATE_FPGA_LOADED);
+
+    return dev->backend->wishbone_master_read(dev, addr, data);
+}
+
+static int bladerf1_wishbone_master_write(struct bladerf *dev, uint32_t addr, uint32_t data)
+{
+    CHECK_BOARD_STATE(STATE_FPGA_LOADED);
+
+    return dev->backend->wishbone_master_write(dev, addr, data);
+}
+
+/******************************************************************************/
 /* Low-level Configuration GPIO access */
 /******************************************************************************/
 
@@ -3577,6 +3603,8 @@ const struct board_fns bladerf1_board_fns = {
     FIELD_INIT(.trim_dac_write, bladerf1_trim_dac_write),
     FIELD_INIT(.read_trigger, bladerf1_read_trigger),
     FIELD_INIT(.write_trigger, bladerf1_write_trigger),
+    FIELD_INIT(.wishbone_master_read, bladerf1_wishbone_master_read),
+    FIELD_INIT(.wishbone_master_write, bladerf1_wishbone_master_write),
     FIELD_INIT(.config_gpio_read, bladerf1_config_gpio_read),
     FIELD_INIT(.config_gpio_write, bladerf1_config_gpio_write),
     FIELD_INIT(.erase_flash, bladerf1_erase_flash),

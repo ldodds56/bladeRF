@@ -426,6 +426,10 @@ static int bladerf2_open(struct bladerf *dev, struct bladerf_devinfo *devinfo)
                 full_path = file_find("hostedxA4.rbf");
                 break;
 
+            case BLADERF_FPGA_A5:
+                full_path = file_find("hostedxA5.rbf");
+                break;
+
             case BLADERF_FPGA_A9:
                 full_path = file_find("hostedxA9.rbf");
                 break;
@@ -604,6 +608,10 @@ static int bladerf2_get_fpga_bytes(struct bladerf *dev, size_t *size)
     switch (board_data->fpga_size) {
         case BLADERF_FPGA_A4:
             *size = 2632660;
+            break;
+
+        case BLADERF_FPGA_A5:
+            *size = 4244820;
             break;
 
         case BLADERF_FPGA_A9:
@@ -2710,6 +2718,25 @@ static int bladerf2_write_trigger(struct bladerf *dev,
     return fpga_trigger_write(dev, ch, trigger, val);
 }
 
+/******************************************************************************/
+/* Low-level Wishbone Master access */
+/******************************************************************************/
+
+static int bladerf2_wishbone_master_read(struct bladerf *dev, uint32_t addr, uint32_t *data)
+{
+    CHECK_BOARD_STATE(STATE_FPGA_LOADED);
+    NULL_CHECK(data);
+
+    return dev->backend->wishbone_master_read(dev, addr, data);
+}
+
+static int bladerf2_wishbone_master_write(struct bladerf *dev, uint32_t addr, uint32_t data)
+{
+    CHECK_BOARD_STATE(STATE_FPGA_LOADED);
+
+    return dev->backend->wishbone_master_write(dev, addr, data);
+}
+
 
 /******************************************************************************/
 /* Low-level Configuration GPIO access */
@@ -2869,6 +2896,8 @@ struct board_fns const bladerf2_board_fns = {
     FIELD_INIT(.trim_dac_write, bladerf2_trim_dac_write),
     FIELD_INIT(.read_trigger, bladerf2_read_trigger),
     FIELD_INIT(.write_trigger, bladerf2_write_trigger),
+    FIELD_INIT(.wishbone_master_read, bladerf2_wishbone_master_read),
+    FIELD_INIT(.wishbone_master_write, bladerf2_wishbone_master_write),
     FIELD_INIT(.config_gpio_read, bladerf2_config_gpio_read),
     FIELD_INIT(.config_gpio_write, bladerf2_config_gpio_write),
     FIELD_INIT(.erase_flash, bladerf2_erase_flash),
