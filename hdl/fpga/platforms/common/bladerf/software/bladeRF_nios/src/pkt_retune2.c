@@ -532,6 +532,7 @@ void pkt_retune2(struct pkt_buf *b)
                 profile_load_scheduled(&rx_trigger_queue, module);
                 status = 0;
                 if (period != ((2<<15)-1)) rx_trigger_info.period = period;
+                else rx_trigger_info.period = 0;
                 break;
 
             case BLADERF_MODULE_TX:
@@ -540,6 +541,7 @@ void pkt_retune2(struct pkt_buf *b)
                 profile_load_scheduled(&tx_trigger_queue, module);
                 status = 0;
                 if (period != ((2<<15)-1)) tx_trigger_info.period = period;
+                else tx_trigger_info.period = 0;
                 break;
 
             default:
